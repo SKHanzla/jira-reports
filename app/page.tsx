@@ -156,7 +156,7 @@ function LoginPage({ onLogin }: { onLogin: () => void }) {
             marginBottom: 24,
           }}
         >
-          CDEF Report Portal
+          Exitbliss Report Portal
         </p>
 
         <form
