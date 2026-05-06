@@ -21,6 +21,23 @@ interface ApiResponse {
   error?: string;
 }
 
+interface UserReportRow {
+  user: string;
+  epic_name: string;
+  story_name: string;
+  project_key: string;
+  label: string;
+  project_name: string;
+  status: string;
+  hours: number;
+}
+
+interface UserApiResponse {
+  rows?: UserReportRow[];
+  issueCount?: number;
+  error?: string;
+}
+
 type Status = "idle" | "loading" | "done" | "error";
 
 function getReportPeriod() {
@@ -343,12 +360,26 @@ function LoginPage({ onLogin }: { onLogin: () => void }) {
   );
 }
 
+function getUserReportPeriod() {
+  const now = new Date();
+  const start = new Date(now);
+  start.setDate(now.getDate() - 30);
+  const fmt = (d: Date) =>
+    d.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+  return fmt(start) + " to " + fmt(now);
+}
+
 export default function Page() {
   const [authed, setAuthed] = useState<boolean | null>(null);
   const [status, setStatus] = useState<Status>("idle");
   const [log, setLog] = useState<string[]>([]);
   const [result, setResult] = useState<ApiResponse | null>(null);
   const { period, month, year } = getReportPeriod();
+
+  const [userStatus, setUserStatus] = useState<Status>("idle");
+  const [userLog, setUserLog] = useState<string[]>([]);
+  const [userResult, setUserResult] = useState<UserApiResponse | null>(null);
+  const userPeriod = getUserReportPeriod();
 
   useEffect(() => {
     setAuthed(sessionStorage.getItem("auth") === "1");
@@ -465,6 +496,83 @@ export default function Page() {
 
     XLSX.utils.book_append_sheet(wb, ws, "Time Report");
     XLSX.writeFile(wb, `Active_CDEF_Monthly_Report_${month}_${year}.xlsx`);
+  }
+
+  async function handleGenerateUser() {
+    setUserStatus("loading");
+    setUserLog([]);
+    setUserResult(null);
+    setUserLog((p) => [...p, "Connecting to Jira..."]);
+    setUserLog((p) => [...p, "Fetching issues with worklogs (last 30 days)..."]);
+    try {
+      const res = await fetch("/api/jira-user");
+      setUserLog((p) => [...p, "Processing worklogs by user..."]);
+      const data: UserApiResponse = await res.json();
+      if (!res.ok || data.error) {
+        setUserLog((p) => [...p, `Error: ${data.error}`]);
+        setUserStatus("error");
+        setUserResult(data);
+        return;
+      }
+      setUserLog((p) => [...p, `Found ${data.issueCount} issues · ${data.rows?.length ?? 0} worklog entries.`]);
+      setUserLog((p) => [...p, "Report ready."]);
+      setUserResult(data);
+      setUserStatus("done");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Network error";
+      setUserLog((p) => [...p, `Error: ${msg}`]);
+      setUserStatus("error");
+    }
+  }
+
+  function handleDownloadUser() {
+    if (!userResult?.rows?.length) return;
+
+    const wb = XLSX.utils.book_new();
+    const ws: XLSX.WorkSheet = {};
+
+    ws["A1"] = { v: "Report Name: Time Tracking Report By User", t: "s" };
+    ws["A2"] = { v: `Report Period: ${userPeriod}`, t: "s" };
+
+    const headers = ["Epic Name", "Story Name", "Project key", "Labels", "Project name", "Status", "Total Hours logged"];
+    const cols = ["A", "B", "C", "D", "E", "F", "G"];
+    headers.forEach((h, i) => { ws[`${cols[i]}7`] = { v: h, t: "s" }; });
+
+    const byUser: Record<string, UserReportRow[]> = {};
+    for (const row of userResult.rows) {
+      if (!byUser[row.user]) byUser[row.user] = [];
+      byUser[row.user].push(row);
+    }
+
+    let cur = 8;
+    for (const user of Object.keys(byUser).sort()) {
+      ws[`A${cur}`] = { v: `User: ${user}`, t: "s" };
+      cur++;
+      const sorted = byUser[user].sort((a, b) =>
+        a.epic_name.localeCompare(b.epic_name) || a.story_name.localeCompare(b.story_name)
+      );
+      for (const r of sorted) {
+        ws[`A${cur}`] = { v: r.epic_name, t: "s" };
+        ws[`B${cur}`] = { v: r.story_name, t: "s" };
+        ws[`C${cur}`] = { v: r.project_key, t: "s" };
+        ws[`D${cur}`] = { v: r.label, t: "s" };
+        ws[`E${cur}`] = { v: r.project_name, t: "s" };
+        ws[`F${cur}`] = { v: r.status, t: "s" };
+        ws[`G${cur}`] = { v: r.hours, t: "n" };
+        cur++;
+      }
+      cur++;
+    }
+
+    ws["!ref"] = `A1:G${cur - 1}`;
+    ws["!cols"] = [
+      { wch: 40 }, { wch: 70 }, { wch: 14 },
+      { wch: 20 }, { wch: 30 }, { wch: 18 }, { wch: 20 },
+    ];
+
+    XLSX.utils.book_append_sheet(wb, ws, "Time Report");
+    const now = new Date();
+    XLSX.writeFile(wb, `User_Time_Report_Last30Days_${now.getFullYear()}_${String(now.getMonth() + 1).padStart(2, "0")}.xlsx`);
   }
 
   const totalEst =
@@ -1029,6 +1137,202 @@ export default function Page() {
             </p>
           </>
         )}
+
+        {/* ── User Time Report section ─────────────────────────────────── */}
+        <div style={{ height: 1, background: "#ede9fe", margin: "40px 0 28px" }} />
+
+        <div style={{ marginBottom: 20 }}>
+          <div style={{
+            display: "inline-flex", alignItems: "center", gap: 6,
+            background: purpleLight, color: purple,
+            fontSize: 11, fontWeight: 500, letterSpacing: "0.1em",
+            textTransform: "uppercase", padding: "4px 12px",
+            borderRadius: 99, marginBottom: 12,
+          }}>
+            <div style={{ width: 6, height: 6, borderRadius: "50%", background: purpleMid }} />
+            Last 30 Days
+          </div>
+          <h2 style={{ fontSize: 22, fontWeight: 700, color: "#1c1917", marginBottom: 4, letterSpacing: "-0.01em" }}>
+            User Time Tracking Report
+          </h2>
+          <p style={{ fontSize: 13, color: "#78716c" }}>{userPeriod}</p>
+        </div>
+
+        {/* Action row */}
+        <div style={{ display: "flex", gap: 12, marginBottom: 24, alignItems: "center" }}>
+          <button
+            onClick={handleGenerateUser}
+            disabled={userStatus === "loading"}
+            style={{
+              background: userStatus === "loading" ? "#c4b5d4" : purple,
+              color: "#fff",
+              border: "none",
+              borderRadius: 8,
+              padding: "10px 22px",
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: userStatus === "loading" ? "not-allowed" : "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              transition: "background 0.15s",
+            }}
+          >
+            {userStatus === "loading" && (
+              <span style={{
+                width: 12, height: 12, borderRadius: "50%",
+                border: "2px solid rgba(255,255,255,0.35)",
+                borderTopColor: "#fff",
+                display: "inline-block",
+                animation: "spin 0.7s linear infinite",
+              }} />
+            )}
+            {userStatus === "loading" ? "Generating..." : "Generate User Report"}
+          </button>
+
+          <button
+            onClick={handleDownloadUser}
+            disabled={userStatus !== "done"}
+            style={{
+              background: userStatus === "done" ? purpleLight : "#f3f4f6",
+              color: userStatus === "done" ? purple : "#9ca3af",
+              border: userStatus === "done" ? "1.5px solid #c084d4" : "1.5px solid #e5e7eb",
+              borderRadius: 8,
+              padding: "10px 22px",
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: userStatus === "done" ? "pointer" : "not-allowed",
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              transition: "all 0.15s",
+            }}
+          >
+            <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+            </svg>
+            Download XLSX
+          </button>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <div style={{
+              width: 7, height: 7, borderRadius: "50%",
+              background: userStatus === "done" ? "#639922" : userStatus === "error" ? "#E24B4A" : userStatus === "loading" ? purpleMid : "#d1d5db",
+              animation: userStatus === "loading" ? "pulse 1s infinite" : "none",
+            }} />
+            <span style={{ fontSize: 12, color: "#78716c" }}>
+              {userStatus === "idle" ? "Ready" : userStatus === "loading" ? "Fetching from Jira..." : userStatus === "done" ? "Report ready" : "Error"}
+            </span>
+          </div>
+        </div>
+
+        {/* Terminal log */}
+        {userLog.length > 0 && (
+          <div style={{
+            background: "#1a0d24", borderRadius: 10,
+            padding: "16px 20px", marginBottom: 24,
+            fontFamily: "ui-monospace, monospace", fontSize: 12, lineHeight: 1.8,
+          }}>
+            {userLog.map((line, i) => (
+              <div key={i} style={{ color: line.startsWith("Error") ? "#f87171" : "#d8b4fe", display: "flex", gap: 10 }}>
+                <span style={{ color: "#6b3a8a", flexShrink: 0 }}>$</span>
+                {line}
+              </div>
+            ))}
+            {userStatus === "loading" && (
+              <div style={{ color: purpleMid, display: "flex", gap: 10 }}>
+                <span style={{ color: "#6b3a8a" }}>$</span>
+                <span style={{ animation: "blink 1s step-end infinite" }}>▌</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Error */}
+        {userStatus === "error" && (
+          <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: 8, padding: "14px 18px", marginBottom: 24 }}>
+            <p style={{ fontSize: 13, color: "#b91c1c", fontWeight: 600, marginBottom: 4 }}>Failed to generate report</p>
+            <p style={{ fontSize: 13, color: "#ef4444" }}>{userResult?.error ?? "Unknown error"}</p>
+          </div>
+        )}
+
+        {/* Preview table */}
+        {userStatus === "done" && userResult?.rows && (() => {
+          const byUser: Record<string, UserReportRow[]> = {};
+          for (const r of userResult.rows) {
+            if (!byUser[r.user]) byUser[r.user] = [];
+            byUser[r.user].push(r);
+          }
+          const totalHours = userResult.rows.reduce((s, r) => s + r.hours, 0);
+          return (
+            <>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0,1fr))", gap: 12, marginBottom: 24 }}>
+                {[
+                  { label: "Users", value: String(Object.keys(byUser).length) },
+                  { label: "Tasks", value: String(userResult.rows.length) },
+                  { label: "Total Hours", value: `${totalHours.toFixed(1)}h` },
+                ].map((s, i) => (
+                  <div key={s.label} style={{
+                    background: "#fff",
+                    border: `1px solid ${i === 2 ? "#c084d4" : "#e9d5f7"}`,
+                    borderTop: i === 2 ? `3px solid ${purpleMid}` : "3px solid #e9d5f7",
+                    borderRadius: 10, padding: "14px 16px",
+                  }}>
+                    <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.1em", color: "#a8a29e", marginBottom: 6 }}>{s.label}</div>
+                    <div style={{ fontSize: 22, fontWeight: 700, color: "#1c1917" }}>{s.value}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ background: "#fff", border: "1px solid #e9d5f7", borderRadius: 10, overflow: "hidden", marginBottom: 16 }}>
+                <div style={{
+                  padding: "13px 18px", borderBottom: "1px solid #f3e8ff",
+                  display: "flex", justifyContent: "space-between", alignItems: "center",
+                  background: purpleLight,
+                }}>
+                  <span style={{ fontSize: 12, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.1em", color: purple }}>
+                    Preview — by user
+                  </span>
+                  <span style={{ fontSize: 12, color: "#9333ea" }}>{userResult.rows.length} total rows in XLSX</span>
+                </div>
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                    <thead>
+                      <tr style={{ background: "#faf5ff" }}>
+                        {["User", "Epic Name", "Story Name", "Project", "Status", "Hours"].map((h) => (
+                          <th key={h} style={{
+                            padding: "10px 14px", textAlign: "left",
+                            fontSize: 11, textTransform: "uppercase", letterSpacing: "0.08em",
+                            color: "#9333ea", fontWeight: 600,
+                            borderBottom: "1px solid #f3e8ff", whiteSpace: "nowrap",
+                          }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {userResult.rows.slice(0, 20).map((row, i) => (
+                        <tr key={i} style={{ borderBottom: "1px solid #faf5ff" }}>
+                          <td style={{ padding: "9px 14px", fontWeight: 600, color: purple, whiteSpace: "nowrap" }}>{row.user}</td>
+                          <td style={{ padding: "9px 14px", color: "#78716c", maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.epic_name}</td>
+                          <td style={{ padding: "9px 14px", color: "#1c1917", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.story_name}</td>
+                          <td style={{ padding: "9px 14px" }}>
+                            <span style={{ background: purpleLight, color: purple, padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 600 }}>{row.project_key}</span>
+                          </td>
+                          <td style={{ padding: "9px 14px", color: "#78716c", whiteSpace: "nowrap" }}>{row.status}</td>
+                          <td style={{ padding: "9px 14px", color: "#15803d", textAlign: "right", fontWeight: 600 }}>{row.hours}h</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <p style={{ fontSize: 12, color: "#a8a29e", textAlign: "center" }}>
+                XLSX includes all {userResult.rows.length} rows · grouped by user
+              </p>
+            </>
+          );
+        })()}
       </div>
 
       <style>{`
