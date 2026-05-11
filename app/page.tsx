@@ -38,6 +38,24 @@ interface UserApiResponse {
   error?: string;
 }
 
+interface ProjectReportRow {
+  project_name: string;
+  project_key: string;
+  epic_name: string;
+  story_name: string;
+  label: string;
+  status: string;
+  original_estimate: number;
+  hours_logged: number;
+  hours_left: number;
+}
+
+interface ProjectApiResponse {
+  rows?: ProjectReportRow[];
+  issueCount?: number;
+  error?: string;
+}
+
 type Status = "idle" | "loading" | "done" | "error";
 
 function getReportPeriod() {
@@ -385,6 +403,10 @@ export default function Page() {
   const [userResult, setUserResult] = useState<UserApiResponse | null>(null);
   const userPeriod = getUserReportPeriod();
 
+  const [projStatus, setProjStatus] = useState<Status>("idle");
+  const [projLog, setProjLog] = useState<string[]>([]);
+  const [projResult, setProjResult] = useState<ProjectApiResponse | null>(null);
+
   useEffect(() => {
     setAuthed(sessionStorage.getItem("auth") === "1");
   }, []);
@@ -602,6 +624,92 @@ export default function Page() {
     XLSX.writeFile(
       wb,
       `User_Time_Report_Last30Days_${now.getFullYear()}_${String(now.getMonth() + 1).padStart(2, "0")}.xlsx`,
+    );
+  }
+
+  async function handleGenerateProject() {
+    setProjStatus("loading");
+    setProjLog([]);
+    setProjResult(null);
+    setProjLog((p) => [...p, "Connecting to Jira..."]);
+    setProjLog((p) => [...p, "Fetching issues with worklogs (last 30 days)..."]);
+    try {
+      const res = await fetch("/api/jira-project");
+      setProjLog((p) => [...p, "Processing worklogs by project..."]);
+      const data: ProjectApiResponse = await res.json();
+      if (!res.ok || data.error) {
+        setProjLog((p) => [...p, `Error: ${data.error}`]);
+        setProjStatus("error");
+        setProjResult(data);
+        return;
+      }
+      setProjLog((p) => [...p, `Found ${data.issueCount} issues · ${data.rows?.length ?? 0} task entries.`]);
+      setProjLog((p) => [...p, "Report ready."]);
+      setProjResult(data);
+      setProjStatus("done");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Network error";
+      setProjLog((p) => [...p, `Error: ${msg}`]);
+      setProjStatus("error");
+    }
+  }
+
+  function handleDownloadProject() {
+    if (!projResult?.rows?.length) return;
+
+    const wb = XLSX.utils.book_new();
+    const ws: XLSX.WorkSheet = {};
+
+    ws["A1"] = { v: "Report Name: Time Tracking Report By Project", t: "s" };
+    ws["A2"] = { v: `Report Period: ${userPeriod}`, t: "s" };
+
+    const headers = [
+      "Epic Name", "Story Name", "Project key", "Labels",
+      "Project name", "Status", "Original estimate", "Total Hours logged", "hrs Left",
+    ];
+    ["A","B","C","D","E","F","G","H","I"].forEach((col, i) => {
+      ws[`${col}7`] = { v: headers[i], t: "s" };
+    });
+
+    const byProject: Record<string, ProjectReportRow[]> = {};
+    for (const row of projResult.rows) {
+      if (!byProject[row.project_name]) byProject[row.project_name] = [];
+      byProject[row.project_name].push(row);
+    }
+
+    let cur = 8;
+    for (const proj of Object.keys(byProject).sort()) {
+      ws[`A${cur}`] = { v: `Project: ${proj}`, t: "s" };
+      cur++;
+      const sorted = byProject[proj].sort((a, b) =>
+        a.epic_name.localeCompare(b.epic_name) || a.story_name.localeCompare(b.story_name)
+      );
+      for (const r of sorted) {
+        ws[`A${cur}`] = { v: r.epic_name, t: "s" };
+        ws[`B${cur}`] = { v: r.story_name, t: "s" };
+        ws[`C${cur}`] = { v: r.project_key, t: "s" };
+        ws[`D${cur}`] = { v: r.label, t: "s" };
+        ws[`E${cur}`] = { v: r.project_name, t: "s" };
+        ws[`F${cur}`] = { v: r.status, t: "s" };
+        ws[`G${cur}`] = { v: r.original_estimate, t: "n" };
+        ws[`H${cur}`] = { v: r.hours_logged, t: "n" };
+        ws[`I${cur}`] = { v: r.hours_left, t: "n" };
+        cur++;
+      }
+      cur++;
+    }
+
+    ws["!ref"] = `A1:I${cur - 1}`;
+    ws["!cols"] = [
+      { wch: 51 }, { wch: 51 }, { wch: 15 }, { wch: 10 },
+      { wch: 32 }, { wch: 18 }, { wch: 21 }, { wch: 22 }, { wch: 12 },
+    ];
+
+    XLSX.utils.book_append_sheet(wb, ws, "Time Report");
+    const now = new Date();
+    XLSX.writeFile(
+      wb,
+      `Project_Time_Report_Last30Days_${now.getFullYear()}_${String(now.getMonth() + 1).padStart(2, "0")}.xlsx`,
     );
   }
 
@@ -1623,6 +1731,191 @@ export default function Page() {
               </>
             );
           })()}
+
+        {/* ── Project Time Report section ──────────────────────────────────── */}
+        <div style={{ height: 1, background: "#ede9fe", margin: "40px 0 28px" }} />
+
+        <div style={{ marginBottom: 20 }}>
+          <div style={{
+            display: "inline-flex", alignItems: "center", gap: 6,
+            background: purpleLight, color: purple,
+            fontSize: 11, fontWeight: 500, letterSpacing: "0.1em",
+            textTransform: "uppercase", padding: "4px 12px",
+            borderRadius: 99, marginBottom: 12,
+          }}>
+            <div style={{ width: 6, height: 6, borderRadius: "50%", background: purpleMid }} />
+            Last 30 Days
+          </div>
+          <h2 style={{ fontSize: 22, fontWeight: 700, color: "#1c1917", marginBottom: 4, letterSpacing: "-0.01em" }}>
+            Project Time Tracking Report
+          </h2>
+          <p style={{ fontSize: 13, color: "#78716c" }}>{userPeriod}</p>
+        </div>
+
+        {/* Action row */}
+        <div style={{ display: "flex", gap: 12, marginBottom: 24, alignItems: "center" }}>
+          <button
+            onClick={handleGenerateProject}
+            disabled={projStatus === "loading"}
+            style={{
+              background: projStatus === "loading" ? "#c4b5d4" : purple,
+              color: "#fff", border: "none", borderRadius: 8,
+              padding: "10px 22px", fontSize: 13, fontWeight: 600,
+              cursor: projStatus === "loading" ? "not-allowed" : "pointer",
+              display: "flex", alignItems: "center", gap: 8,
+              transition: "background 0.15s",
+            }}
+          >
+            {projStatus === "loading" && (
+              <span style={{
+                width: 12, height: 12, borderRadius: "50%",
+                border: "2px solid rgba(255,255,255,0.35)", borderTopColor: "#fff",
+                display: "inline-block", animation: "spin 0.7s linear infinite",
+              }} />
+            )}
+            {projStatus === "loading" ? "Generating..." : "Generate Project Report"}
+          </button>
+
+          <button
+            onClick={handleDownloadProject}
+            disabled={projStatus !== "done"}
+            style={{
+              background: projStatus === "done" ? purpleLight : "#f3f4f6",
+              color: projStatus === "done" ? purple : "#9ca3af",
+              border: projStatus === "done" ? "1.5px solid #c084d4" : "1.5px solid #e5e7eb",
+              borderRadius: 8, padding: "10px 22px", fontSize: 13, fontWeight: 600,
+              cursor: projStatus === "done" ? "pointer" : "not-allowed",
+              display: "flex", alignItems: "center", gap: 8, transition: "all 0.15s",
+            }}
+          >
+            <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+            </svg>
+            Download XLSX
+          </button>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <div style={{
+              width: 7, height: 7, borderRadius: "50%",
+              background: projStatus === "done" ? "#639922" : projStatus === "error" ? "#E24B4A" : projStatus === "loading" ? purpleMid : "#d1d5db",
+              animation: projStatus === "loading" ? "pulse 1s infinite" : "none",
+            }} />
+            <span style={{ fontSize: 12, color: "#78716c" }}>
+              {projStatus === "idle" ? "Ready" : projStatus === "loading" ? "Fetching from Jira..." : projStatus === "done" ? "Report ready" : "Error"}
+            </span>
+          </div>
+        </div>
+
+        {/* Terminal log */}
+        {projLog.length > 0 && (
+          <div style={{
+            background: "#1a0d24", borderRadius: 10,
+            padding: "16px 20px", marginBottom: 24,
+            fontFamily: "ui-monospace, monospace", fontSize: 12, lineHeight: 1.8,
+          }}>
+            {projLog.map((line, i) => (
+              <div key={i} style={{ color: line.startsWith("Error") ? "#f87171" : "#d8b4fe", display: "flex", gap: 10 }}>
+                <span style={{ color: "#6b3a8a", flexShrink: 0 }}>$</span>
+                {line}
+              </div>
+            ))}
+            {projStatus === "loading" && (
+              <div style={{ color: purpleMid, display: "flex", gap: 10 }}>
+                <span style={{ color: "#6b3a8a" }}>$</span>
+                <span style={{ animation: "blink 1s step-end infinite" }}>▌</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Error */}
+        {projStatus === "error" && (
+          <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: 8, padding: "14px 18px", marginBottom: 24 }}>
+            <p style={{ fontSize: 13, color: "#b91c1c", fontWeight: 600, marginBottom: 4 }}>Failed to generate report</p>
+            <p style={{ fontSize: 13, color: "#ef4444" }}>{projResult?.error ?? "Unknown error"}</p>
+          </div>
+        )}
+
+        {/* Preview table */}
+        {projStatus === "done" && projResult?.rows && (() => {
+          const byProject: Record<string, ProjectReportRow[]> = {};
+          for (const r of projResult.rows) {
+            if (!byProject[r.project_name]) byProject[r.project_name] = [];
+            byProject[r.project_name].push(r);
+          }
+          const totalLogged = projResult.rows.reduce((s, r) => s + r.hours_logged, 0);
+          const totalEst = projResult.rows.reduce((s, r) => s + r.original_estimate, 0);
+          return (
+            <>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0,1fr))", gap: 12, marginBottom: 24 }}>
+                {[
+                  { label: "Projects", value: String(Object.keys(byProject).length) },
+                  { label: "Tasks",    value: String(projResult.rows.length) },
+                  { label: "Estimate", value: `${totalEst.toFixed(1)}h` },
+                  { label: "Logged",   value: `${totalLogged.toFixed(1)}h` },
+                ].map((s, i) => (
+                  <div key={s.label} style={{
+                    background: "#fff",
+                    border: `1px solid ${i === 3 ? "#c084d4" : "#e9d5f7"}`,
+                    borderTop: i === 3 ? `3px solid ${purpleMid}` : "3px solid #e9d5f7",
+                    borderRadius: 10, padding: "14px 16px",
+                  }}>
+                    <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.1em", color: "#a8a29e", marginBottom: 6 }}>{s.label}</div>
+                    <div style={{ fontSize: 22, fontWeight: 700, color: "#1c1917" }}>{s.value}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ background: "#fff", border: "1px solid #e9d5f7", borderRadius: 10, overflow: "hidden", marginBottom: 16 }}>
+                <div style={{
+                  padding: "13px 18px", borderBottom: "1px solid #f3e8ff",
+                  display: "flex", justifyContent: "space-between", alignItems: "center",
+                  background: purpleLight,
+                }}>
+                  <span style={{ fontSize: 12, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.1em", color: purple }}>
+                    Preview — by project
+                  </span>
+                  <span style={{ fontSize: 12, color: "#9333ea" }}>{projResult.rows.length} total rows in XLSX</span>
+                </div>
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                    <thead>
+                      <tr style={{ background: "#faf5ff" }}>
+                        {["Project", "Epic Name", "Story Name", "Status", "Est (h)", "Logged (h)", "Left (h)"].map((h) => (
+                          <th key={h} style={{
+                            padding: "10px 14px", textAlign: "left",
+                            fontSize: 11, textTransform: "uppercase", letterSpacing: "0.08em",
+                            color: "#9333ea", fontWeight: 600,
+                            borderBottom: "1px solid #f3e8ff", whiteSpace: "nowrap",
+                          }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {projResult.rows.slice(0, 20).map((row, i) => (
+                        <tr key={i} style={{ borderBottom: "1px solid #faf5ff" }}>
+                          <td style={{ padding: "9px 14px" }}>
+                            <span style={{ background: purpleLight, color: purple, padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 600 }}>{row.project_key}</span>
+                          </td>
+                          <td style={{ padding: "9px 14px", color: "#78716c", maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.epic_name}</td>
+                          <td style={{ padding: "9px 14px", color: "#1c1917", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.story_name}</td>
+                          <td style={{ padding: "9px 14px", color: "#78716c", whiteSpace: "nowrap" }}>{row.status}</td>
+                          <td style={{ padding: "9px 14px", color: "#1c1917", textAlign: "right" }}>{row.original_estimate}</td>
+                          <td style={{ padding: "9px 14px", color: "#15803d", textAlign: "right", fontWeight: 600 }}>{row.hours_logged}</td>
+                          <td style={{ padding: "9px 14px", color: row.hours_left === 0 ? "#a8a29e" : "#92400e", textAlign: "right", fontWeight: 600 }}>{row.hours_left}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <p style={{ fontSize: 12, color: "#a8a29e", textAlign: "center" }}>
+                XLSX includes all {projResult.rows.length} rows · grouped by project
+              </p>
+            </>
+          );
+        })()}
       </div>
 
       <style>{`
