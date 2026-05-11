@@ -38,6 +38,24 @@ interface UserApiResponse {
   error?: string;
 }
 
+interface ProjectReportRow {
+  project_name: string;
+  project_key: string;
+  epic_name: string;
+  story_name: string;
+  label: string;
+  status: string;
+  original_estimate: number;
+  hours_logged: number;
+  hours_left: number;
+}
+
+interface ProjectApiResponse {
+  rows?: ProjectReportRow[];
+  issueCount?: number;
+  error?: string;
+}
+
 type Status = "idle" | "loading" | "done" | "error";
 
 function getReportPeriod() {
@@ -385,6 +403,10 @@ export default function Page() {
   const [userResult, setUserResult] = useState<UserApiResponse | null>(null);
   const userPeriod = getUserReportPeriod();
 
+  const [projStatus, setProjStatus] = useState<Status>("idle");
+  const [projLog, setProjLog] = useState<string[]>([]);
+  const [projResult, setProjResult] = useState<ProjectApiResponse | null>(null);
+
   useEffect(() => {
     setAuthed(sessionStorage.getItem("auth") === "1");
   }, []);
@@ -602,6 +624,92 @@ export default function Page() {
     XLSX.writeFile(
       wb,
       `User_Time_Report_Last30Days_${now.getFullYear()}_${String(now.getMonth() + 1).padStart(2, "0")}.xlsx`,
+    );
+  }
+
+  async function handleGenerateProject() {
+    setProjStatus("loading");
+    setProjLog([]);
+    setProjResult(null);
+    setProjLog((p) => [...p, "Connecting to Jira..."]);
+    setProjLog((p) => [...p, "Fetching issues with worklogs (last 30 days)..."]);
+    try {
+      const res = await fetch("/api/jira-project");
+      setProjLog((p) => [...p, "Processing worklogs by project..."]);
+      const data: ProjectApiResponse = await res.json();
+      if (!res.ok || data.error) {
+        setProjLog((p) => [...p, `Error: ${data.error}`]);
+        setProjStatus("error");
+        setProjResult(data);
+        return;
+      }
+      setProjLog((p) => [...p, `Found ${data.issueCount} issues · ${data.rows?.length ?? 0} task entries.`]);
+      setProjLog((p) => [...p, "Report ready."]);
+      setProjResult(data);
+      setProjStatus("done");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Network error";
+      setProjLog((p) => [...p, `Error: ${msg}`]);
+      setProjStatus("error");
+    }
+  }
+
+  function handleDownloadProject() {
+    if (!projResult?.rows?.length) return;
+
+    const wb = XLSX.utils.book_new();
+    const ws: XLSX.WorkSheet = {};
+
+    ws["A1"] = { v: "Report Name: Time Tracking Report By Project", t: "s" };
+    ws["A2"] = { v: `Report Period: ${userPeriod}`, t: "s" };
+
+    const headers = [
+      "Epic Name", "Story Name", "Project key", "Labels",
+      "Project name", "Status", "Original estimate", "Total Hours logged", "hrs Left",
+    ];
+    ["A","B","C","D","E","F","G","H","I"].forEach((col, i) => {
+      ws[`${col}7`] = { v: headers[i], t: "s" };
+    });
+
+    const byProject: Record<string, ProjectReportRow[]> = {};
+    for (const row of projResult.rows) {
+      if (!byProject[row.project_name]) byProject[row.project_name] = [];
+      byProject[row.project_name].push(row);
+    }
+
+    let cur = 8;
+    for (const proj of Object.keys(byProject).sort()) {
+      ws[`A${cur}`] = { v: `Project: ${proj}`, t: "s" };
+      cur++;
+      const sorted = byProject[proj].sort((a, b) =>
+        a.epic_name.localeCompare(b.epic_name) || a.story_name.localeCompare(b.story_name)
+      );
+      for (const r of sorted) {
+        ws[`A${cur}`] = { v: r.epic_name, t: "s" };
+        ws[`B${cur}`] = { v: r.story_name, t: "s" };
+        ws[`C${cur}`] = { v: r.project_key, t: "s" };
+        ws[`D${cur}`] = { v: r.label, t: "s" };
+        ws[`E${cur}`] = { v: r.project_name, t: "s" };
+        ws[`F${cur}`] = { v: r.status, t: "s" };
+        ws[`G${cur}`] = { v: r.original_estimate, t: "n" };
+        ws[`H${cur}`] = { v: r.hours_logged, t: "n" };
+        ws[`I${cur}`] = { v: r.hours_left, t: "n" };
+        cur++;
+      }
+      cur++;
+    }
+
+    ws["!ref"] = `A1:I${cur - 1}`;
+    ws["!cols"] = [
+      { wch: 51 }, { wch: 51 }, { wch: 15 }, { wch: 10 },
+      { wch: 32 }, { wch: 18 }, { wch: 21 }, { wch: 22 }, { wch: 12 },
+    ];
+
+    XLSX.utils.book_append_sheet(wb, ws, "Time Report");
+    const now = new Date();
+    XLSX.writeFile(
+      wb,
+      `Project_Time_Report_Last30Days_${now.getFullYear()}_${String(now.getMonth() + 1).padStart(2, "0")}.xlsx`,
     );
   }
 
