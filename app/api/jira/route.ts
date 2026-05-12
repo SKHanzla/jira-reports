@@ -150,8 +150,9 @@ export async function GET() {
       const hrsLeft = Math.max(0, Math.round((estHours - hoursLogged) * 100) / 100);
 
       rows.push({
+        epic_key: epicKey,
         epic_name: epicInfo.epic_name,
-        story_name: `${epicInfo.epic_name}-${f.summary as string}`,
+        story_name: f.summary as string,
         project_key: (project.key as string) || epicInfo.project_key,
         labels: "CDEF",
         project_name: (project.name as string) || epicInfo.project_name,
