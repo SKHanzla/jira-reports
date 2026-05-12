@@ -5,6 +5,7 @@ import * as XLSX from "xlsx";
 
 interface ReportRow {
   epic_key: string;
+  epic_order: number;
   epic_name: string;
   story_name: string;
   project_key: string;
@@ -482,7 +483,7 @@ export default function Page() {
     const sorted = [...result.rows].sort(
       (a, b) =>
         a.project_key.localeCompare(b.project_key) ||
-        (a.epic_name || "").localeCompare(b.epic_name || "") ||
+        a.epic_order - b.epic_order ||
         a.story_name.localeCompare(b.story_name),
     );
 

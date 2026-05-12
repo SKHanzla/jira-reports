@@ -75,9 +75,9 @@ export async function GET() {
       return NextResponse.json({ error: "No CDEF Epics found" }, { status: 404 });
     }
 
-    // Build epic map
+    // Build epic map — order preserved from Jira response (= creation order)
     const epicKeys: string[] = [];
-    const epicInfoMap: Record<string, { epic_name: string; project_key: string; project_name: string }> = {};
+    const epicInfoMap: Record<string, { epic_name: string; project_key: string; project_name: string; epic_order: number }> = {};
     const projectsWithEpics = new Set<string>();
 
     for (const issue of epicIssues) {
@@ -85,12 +85,13 @@ export async function GET() {
       const f = issue.fields as Record<string, unknown>;
       const project = (f.project as Record<string, unknown>) || {};
       const projectKey = (project.key as string) || "UNKNOWN";
-      epicKeys.push(key);
       epicInfoMap[key] = {
         epic_name: (f.summary as string) || key,
         project_key: projectKey,
         project_name: (project.name as string) || "",
+        epic_order: epicKeys.length, // position in Jira's response = creation order
       };
+      epicKeys.push(key);
       projectsWithEpics.add(projectKey);
     }
 
@@ -102,12 +103,13 @@ export async function GET() {
         if (!epicInfoMap[key]) {
           const f = e.fields as Record<string, unknown>;
           const project = (f.project as Record<string, unknown>) || {};
-          epicKeys.push(key);
           epicInfoMap[key] = {
             epic_name: (f.summary as string) || key,
             project_key: (project.key as string) || "AGP",
             project_name: (project.name as string) || "",
+            epic_order: epicKeys.length,
           };
+          epicKeys.push(key);
           projectsWithEpics.add((project.key as string) || "AGP");
         }
       }
@@ -151,6 +153,7 @@ export async function GET() {
 
       rows.push({
         epic_key: epicKey,
+        epic_order: epicInfo.epic_order,
         epic_name: epicInfo.epic_name,
         story_name: f.summary as string,
         project_key: (project.key as string) || epicInfo.project_key,
