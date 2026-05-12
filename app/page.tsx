@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import * as XLSX from "xlsx";
 
 interface ReportRow {
+  epic_key: string;
   epic_name: string;
   story_name: string;
   project_key: string;
