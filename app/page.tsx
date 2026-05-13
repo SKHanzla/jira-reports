@@ -480,10 +480,11 @@ export default function Page() {
     });
 
     // Group rows by project_key to insert blank rows between projects
+    const epicNum = (key: string) => parseInt(key?.split("-")[1] ?? "0", 10);
     const sorted = [...result.rows].sort(
       (a, b) =>
         a.project_key.localeCompare(b.project_key) ||
-        a.epic_order - b.epic_order ||
+        epicNum(a.epic_key) - epicNum(b.epic_key) ||
         a.story_name.localeCompare(b.story_name),
     );
 
