@@ -527,6 +527,113 @@ export default function Page() {
     XLSX.writeFile(wb, `Active_CDEF_Monthly_Report_${month}_${year}.xlsx`);
   }
 
+  function handleGenerateInvoice() {
+    if (!result?.rows?.length) return;
+
+    const PRICE_LIST: Record<string, number> = {
+      "Standard Operating Procedures": 275,
+      "Business Operations and Project Management": 250,
+      "Administrative, Finance and Compliance": 250,
+      "Administrative Charges": 250,
+      "Governance and Policy": 250,
+      "Productivity System Set-Up": 350,
+      "Organizational Assessment & Audit": 300,
+      "Documentation Creation": 250,
+      "Vendor Management": 250,
+      "Documentation Management": 275,
+      "Leadership and Executive Coaching": 250,
+      "Organizational Change Management": 275,
+      "Succession Planning": 275,
+      "Strategic Planning": 250,
+      "Business Continuity": 250,
+      "Process Improvement/Computer Training": 275,
+      "Marketing and Strategic Communications": 250,
+    };
+
+    const now = new Date();
+    const mm = String(now.getMonth() + 1).padStart(2, "0");
+    const dd = String(now.getDate()).padStart(2, "0");
+    const mmdd = `${mm}${dd}`;
+    const invoiceDate = `${now.getMonth() + 1}/${now.getDate()}/${now.getFullYear()}`;
+    const due = new Date(now); due.setDate(due.getDate() + 60);
+    const dueStr = `${due.getMonth() + 1}/${due.getDate()}/${due.getFullYear()}`;
+
+    // Date of service = previous month range
+    const svcMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const svcLast = new Date(now.getFullYear(), now.getMonth(), 0).getDate();
+    const svcMonthName = svcMonth.toLocaleString("en-US", { month: "long" });
+    const dateOfService = `${svcMonthName} 1 - ${svcLast}, ${svcMonth.getFullYear()}`;
+
+    // Group by project_key, sorted alphabetically
+    const byProject: Record<string, ReportRow[]> = {};
+    for (const row of result.rows) {
+      if (!byProject[row.project_key]) byProject[row.project_key] = [];
+      byProject[row.project_key].push(row);
+    }
+
+    const csvEscape = (v: string) => {
+      if (v.includes(",") || v.includes('"') || v.includes("\n")) {
+        return `"${v.replace(/"/g, '""')}"`;
+      }
+      return v;
+    };
+
+    const lines: string[] = [];
+    lines.push("Invoice No,Customer,Invoice Date,Due Date,Terms,Item (Product/Service),Item Description,Item Quantity,Item Rate,Item Amount,Memo,Note");
+
+    const epicNum = (k: string) => parseInt(k?.split("-")[1] ?? "0", 10);
+    let seq = 1;
+
+    for (const projKey of Object.keys(byProject).sort()) {
+      const rows = byProject[projKey];
+      const projName = rows[0].project_name;
+      const invoiceNo = `CDEF-${projKey}-${mmdd}-${String(seq).padStart(2, "0")}`;
+      seq++;
+
+      const memo = `This invoice covers;\nCONTRACT #: DCM-SVCSGEN-17106-2025\nCLIENT NAME: ${projName}\nDATE OF SERVICE: ${dateOfService}\n\nThank you for your business`;
+
+      const sorted = [...rows].sort(
+        (a, b) => epicNum(a.epic_key) - epicNum(b.epic_key) || a.story_name.localeCompare(b.story_name)
+      );
+
+      let first = true;
+      for (const r of sorted) {
+        const rate = PRICE_LIST[r.epic_name] ?? 250;
+        const qty = r.total_hours_logged;
+        const amount = Math.round(qty * rate * 100) / 100;
+
+        if (first) {
+          lines.push([
+            invoiceNo,
+            "Construction Diversity & Equity Fund - Multnomah County",
+            invoiceDate, dueStr, "Net 60",
+            csvEscape(r.epic_name),
+            csvEscape(r.story_name),
+            String(qty), String(rate), String(amount),
+            csvEscape(memo), csvEscape(memo),
+          ].join(","));
+          first = false;
+        } else {
+          lines.push([
+            invoiceNo, "", "", "", "",
+            csvEscape(r.epic_name),
+            csvEscape(r.story_name),
+            String(qty), String(rate), String(amount),
+            "", "",
+          ].join(","));
+        }
+      }
+    }
+
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `QB_CDEF_MR_${now.getFullYear()}${mmdd}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   async function handleGenerateUser() {
     setUserStatus("loading");
     setUserLog([]);
@@ -920,6 +1027,30 @@ export default function Page() {
               />
             )}
             {status === "loading" ? "Generating..." : "Generate Report"}
+          </button>
+
+          <button
+            onClick={handleGenerateInvoice}
+            disabled={status !== "done"}
+            style={{
+              background: status === "done" ? "#059669" : "#f3f4f6",
+              color: status === "done" ? "#fff" : "#9ca3af",
+              border: "none",
+              borderRadius: 8,
+              padding: "10px 22px",
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: status === "done" ? "pointer" : "not-allowed",
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              transition: "background 0.15s",
+            }}
+          >
+            <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+            Generate Invoice
           </button>
 
           <button
