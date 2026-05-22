@@ -527,9 +527,8 @@ export default function Page() {
     XLSX.writeFile(wb, `Active_CDEF_Monthly_Report_${month}_${year}.xlsx`);
   }
 
-  function handleGenerateInvoice() {
-    if (!result?.rows?.length) return;
 
+  function buildInvoiceCSV(): { csv: string; filename: string } {
     const PRICE_LIST: Record<string, number> = {
       "Standard Operating Procedures": 275,
       "Business Operations and Project Management": 250,
@@ -557,30 +556,23 @@ export default function Page() {
     const invoiceDate = `${now.getMonth() + 1}/${now.getDate()}/${now.getFullYear()}`;
     const due = new Date(now); due.setDate(due.getDate() + 60);
     const dueStr = `${due.getMonth() + 1}/${due.getDate()}/${due.getFullYear()}`;
-
-    // Date of service = previous month range
     const svcMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
     const svcLast = new Date(now.getFullYear(), now.getMonth(), 0).getDate();
     const svcMonthName = svcMonth.toLocaleString("en-US", { month: "long" });
     const dateOfService = `${svcMonthName} 1 - ${svcLast}, ${svcMonth.getFullYear()}`;
 
-    // Group by project_key, sorted alphabetically
     const byProject: Record<string, ReportRow[]> = {};
-    for (const row of result.rows) {
+    for (const row of result!.rows!) {
       if (!byProject[row.project_key]) byProject[row.project_key] = [];
       byProject[row.project_key].push(row);
     }
 
-    const csvEscape = (v: string) => {
-      if (v.includes(",") || v.includes('"') || v.includes("\n")) {
-        return `"${v.replace(/"/g, '""')}"`;
-      }
-      return v;
-    };
+    const esc = (v: string) =>
+      v.includes(",") || v.includes('"') || v.includes("\n")
+        ? `"${v.replace(/"/g, '""')}"`
+        : v;
 
-    const lines: string[] = [];
-    lines.push("Invoice No,Customer,Invoice Date,Due Date,Terms,Item (Product/Service),Item Description,Item Quantity,Item Rate,Item Amount,Memo,Note");
-
+    const lines = ["Invoice No,Customer,Invoice Date,Due Date,Terms,Item (Product/Service),Item Description,Item Quantity,Item Rate,Item Amount,Memo,Note"];
     const epicNum = (k: string) => parseInt(k?.split("-")[1] ?? "0", 10);
     let seq = 1;
 
@@ -589,49 +581,48 @@ export default function Page() {
       const projName = rows[0].project_name;
       const invoiceNo = `CDEF-${projKey}-${mmdd}-${String(seq).padStart(2, "0")}`;
       seq++;
-
       const memo = `This invoice covers;\nCONTRACT #: DCM-SVCSGEN-17106-2025\nCLIENT NAME: ${projName}\nDATE OF SERVICE: ${dateOfService}\n\nThank you for your business`;
-
-      const sorted = [...rows].sort(
-        (a, b) => epicNum(a.epic_key) - epicNum(b.epic_key) || a.story_name.localeCompare(b.story_name)
-      );
+      const sorted = [...rows].sort((a, b) => epicNum(a.epic_key) - epicNum(b.epic_key) || a.story_name.localeCompare(b.story_name));
 
       let first = true;
       for (const r of sorted) {
         const rate = PRICE_LIST[r.epic_name] ?? 250;
         const qty = r.total_hours_logged;
         const amount = Math.round(qty * rate * 100) / 100;
-
         if (first) {
-          lines.push([
-            invoiceNo,
-            "Construction Diversity & Equity Fund - Multnomah County",
-            invoiceDate, dueStr, "Net 60",
-            csvEscape(r.epic_name),
-            csvEscape(r.story_name),
-            String(qty), String(rate), String(amount),
-            csvEscape(memo), csvEscape(memo),
-          ].join(","));
+          lines.push([invoiceNo, "Construction Diversity & Equity Fund - Multnomah County", invoiceDate, dueStr, "Net 60", esc(r.epic_name), esc(r.story_name), String(qty), String(rate), String(amount), esc(memo), esc(memo)].join(","));
           first = false;
         } else {
-          lines.push([
-            invoiceNo, "", "", "", "",
-            csvEscape(r.epic_name),
-            csvEscape(r.story_name),
-            String(qty), String(rate), String(amount),
-            "", "",
-          ].join(","));
+          lines.push([invoiceNo, "", "", "", "", esc(r.epic_name), esc(r.story_name), String(qty), String(rate), String(amount), "", ""].join(","));
         }
       }
     }
 
-    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `QB_CDEF_MR_${now.getFullYear()}${mmdd}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    return { csv: lines.join("\n"), filename: `QB_CDEF_MR_${now.getFullYear()}${mmdd}.csv` };
+  }
+
+  async function handleGenerateInvoice() {
+    if (!result?.rows?.length) return;
+    const { csv, filename } = buildInvoiceCSV();
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    try {
+      if ("showSaveFilePicker" in window) {
+        const handle = await (window as Window & { showSaveFilePicker: (o: unknown) => Promise<FileSystemFileHandle> }).showSaveFilePicker({
+          suggestedName: filename,
+          types: [{ description: "CSV file", accept: { "text/csv": [".csv"] } }],
+        });
+        const writable = await handle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+      } else {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = filename; a.click();
+        URL.revokeObjectURL(url);
+      }
+    } catch (e) {
+      if ((e as Error).name !== "AbortError") console.error(e);
+    }
   }
 
   async function handleGenerateUser() {
@@ -2057,6 +2048,7 @@ export default function Page() {
         @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
       `}</style>
+
     </main>
   );
 }
