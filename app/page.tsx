@@ -636,7 +636,7 @@ export default function Page() {
 
     return {
       csv: lines.join("\n"),
-      filename: `${svcMonthName}_${svcMonth.getFullYear()}_${now.getFullYear()}${mmdd}.csv`,
+      filename: `${svcMonthName}_${svcMonth.getFullYear()}_${now.getMonth() + 1}-${now.getDate()}-${now.getFullYear()}.csv`,
     };
   }
 
