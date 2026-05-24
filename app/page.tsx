@@ -636,7 +636,7 @@ export default function Page() {
 
     return {
       csv: lines.join("\n"),
-      filename: `QB_CDEF_MR_${svcMonthName}_${svcMonth.getFullYear()}_${now.getFullYear()}${mmdd}.csv`,
+      filename: `${svcMonthName}_${svcMonth.getFullYear()}_${now.getFullYear()}${mmdd}.csv`,
     };
   }
 
