@@ -45,7 +45,12 @@ async function fetchJiraIssues(auth: string, jql: string): Promise<Record<string
   return allIssues;
 }
 
-async function getWorklogHours(auth: string, issueKey: string): Promise<number> {
+async function getWorklogHours(
+  auth: string,
+  issueKey: string,
+  from?: string,
+  to?: string,
+): Promise<number> {
   try {
     const res = await fetch(`https://${DOMAIN}/rest/api/3/issue/${issueKey}/worklog`, {
       headers: { Authorization: `Basic ${auth}`, Accept: "application/json" },
@@ -53,14 +58,25 @@ async function getWorklogHours(auth: string, issueKey: string): Promise<number> 
     if (!res.ok) return 0;
     const data = await res.json();
     const worklogs: Record<string, unknown>[] = data.worklogs || [];
-    const secs = worklogs.reduce((s, w) => s + ((w.timeSpentSeconds as number) || 0), 0);
+    const inRange = (w: Record<string, unknown>) => {
+      if (!from || !to) return true;
+      // `started` looks like "2026-06-15T10:00:00.000-0700"; compare the date part.
+      const day = ((w.started as string) || "").slice(0, 10);
+      return day >= from && day <= to;
+    };
+    const secs = worklogs
+      .filter(inRange)
+      .reduce((s, w) => s + ((w.timeSpentSeconds as number) || 0), 0);
     return Math.round((secs / 3600) * 100) / 100;
   } catch { return 0; }
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const auth = getAuth();
+    const { searchParams } = new URL(request.url);
+    const from = searchParams.get("from") || undefined;
+    const to = searchParams.get("to") || undefined;
 
     // Step 1: Fetch CDEF Epics
     let epicIssues = await fetchJiraIssues(auth, 'labels = "CDEF" AND (type = Epic OR issuetype = Epic)');
@@ -148,7 +164,7 @@ export async function GET() {
       const project = (f.project as Record<string, unknown>) || {};
       const estSecs = f.timeoriginalestimate as number | null;
       const estHours = estSecs ? Math.round((estSecs / 3600) * 100) / 100 : 0;
-      const hoursLogged = await getWorklogHours(auth, key);
+      const hoursLogged = await getWorklogHours(auth, key, from, to);
       const hrsLeft = Math.max(0, Math.round((estHours - hoursLogged) * 100) / 100);
 
       rows.push({
