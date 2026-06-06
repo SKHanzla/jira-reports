@@ -602,7 +602,6 @@ export default function Page() {
       "Marketing and Strategic Communications": 250,
     };
 
-    const now = new Date();
     // Invoice Date / Due Date arrive as YYYY-MM-DD from the popup's date
     // inputs; QuickBooks wants M/D/YYYY. The invoice-number stamp (mmdd) is
     // derived from the chosen invoice date so the two stay consistent.
@@ -610,16 +609,18 @@ export default function Page() {
       const [y, m, d] = iso.split("-").map(Number);
       return `${m}/${d}/${y}`;
     };
-    const [, invMonth, invDay] = opts.invoiceDate.split("-").map(Number);
+    const [invYear, invMonth, invDay] = opts.invoiceDate.split("-").map(Number);
     const mmdd = `${String(invMonth).padStart(2, "0")}${String(invDay).padStart(2, "0")}`;
     const invoiceDate = toMDY(opts.invoiceDate);
     const dueStr = toMDY(opts.dueDate);
 
-    // svcMonthName / svcYear feed the file name; the human-readable
-    // DATE OF SERVICE memo line comes straight from the popup.
-    const svcStart = parseLocalDate(fromDate);
-    const svcMonthName = svcStart.toLocaleString("en-US", { month: "long" });
-    const svcYear = svcStart.getFullYear();
+    // File name is driven by the chosen Invoice Date, e.g.
+    // "June_2026_6-6-2026.csv".
+    const invMonthName = new Date(
+      invYear,
+      invMonth - 1,
+      invDay,
+    ).toLocaleString("en-US", { month: "long" });
     const dateOfService = opts.dateOfService;
 
     const byProject: Record<string, ReportRow[]> = {};
@@ -697,7 +698,7 @@ export default function Page() {
 
     return {
       csv: lines.join("\n"),
-      filename: `${svcMonthName}_${svcYear}_${now.getMonth() + 1}-${now.getDate()}-${now.getFullYear()}.csv`,
+      filename: `${invMonthName}_${invYear}_${invMonth}-${invDay}-${invYear}.csv`,
     };
   }
 
