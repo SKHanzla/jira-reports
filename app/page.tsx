@@ -417,6 +417,19 @@ export default function Page() {
   const [toDate, setToDate] = useState(() => getDefaultRange().to);
   const { period, month, year } = getReportPeriod(fromDate, toDate);
 
+  // QuickBooks invoice popup: lets the user confirm/override the dates that
+  // drive the Invoice Date / Due Date columns and the DATE OF SERVICE memo
+  // line before the file is saved.
+  const [showInvoiceModal, setShowInvoiceModal] = useState(false);
+  const [invoiceDateInput, setInvoiceDateInput] = useState("");
+  const [dueDateInput, setDueDateInput] = useState("");
+  // DATE OF SERVICE is composed from a month dropdown + day range + year,
+  // e.g. "June 1 - 30, 2026".
+  const [svcMonth, setSvcMonth] = useState("");
+  const [svcDayFrom, setSvcDayFrom] = useState("");
+  const [svcDayTo, setSvcDayTo] = useState("");
+  const [svcYear, setSvcYear] = useState("");
+
   const [userStatus, setUserStatus] = useState<Status>("idle");
   const [userLog, setUserLog] = useState<string[]>([]);
   const [userResult, setUserResult] = useState<UserApiResponse | null>(null);
@@ -564,7 +577,11 @@ export default function Page() {
     XLSX.writeFile(wb, `Active_CDEF_Monthly_Report_${month}_${year}.xlsx`);
   }
 
-  function buildInvoiceCSV(): { csv: string; filename: string } {
+  function buildInvoiceCSV(opts: {
+    invoiceDate: string;
+    dueDate: string;
+    dateOfService: string;
+  }): { csv: string; filename: string } {
     const PRICE_LIST: Record<string, number> = {
       "Standard Operating Procedures": 275,
       "Business Operations and Project Management": 250,
@@ -586,31 +603,24 @@ export default function Page() {
     };
 
     const now = new Date();
-    const mm = String(now.getMonth() + 1).padStart(2, "0");
-    const dd = String(now.getDate()).padStart(2, "0");
-    const mmdd = `${mm}${dd}`;
-    const invoiceDate = `${now.getMonth() + 1}/${now.getDate()}/${now.getFullYear()}`;
-    const due = new Date(now);
-    due.setDate(due.getDate() + 60);
-    const dueStr = `${due.getMonth() + 1}/${due.getDate()}/${due.getFullYear()}`;
+    // Invoice Date / Due Date arrive as YYYY-MM-DD from the popup's date
+    // inputs; QuickBooks wants M/D/YYYY. The invoice-number stamp (mmdd) is
+    // derived from the chosen invoice date so the two stay consistent.
+    const toMDY = (iso: string) => {
+      const [y, m, d] = iso.split("-").map(Number);
+      return `${m}/${d}/${y}`;
+    };
+    const [, invMonth, invDay] = opts.invoiceDate.split("-").map(Number);
+    const mmdd = `${String(invMonth).padStart(2, "0")}${String(invDay).padStart(2, "0")}`;
+    const invoiceDate = toMDY(opts.invoiceDate);
+    const dueStr = toMDY(opts.dueDate);
 
-    // Date of service is driven by the selected report range.
+    // svcMonthName / svcYear feed the file name; the human-readable
+    // DATE OF SERVICE memo line comes straight from the popup.
     const svcStart = parseLocalDate(fromDate);
-    const svcEnd = parseLocalDate(toDate);
     const svcMonthName = svcStart.toLocaleString("en-US", { month: "long" });
     const svcYear = svcStart.getFullYear();
-    const sameMonth =
-      svcStart.getFullYear() === svcEnd.getFullYear() &&
-      svcStart.getMonth() === svcEnd.getMonth();
-    const fullFmt = (d: Date) =>
-      d.toLocaleDateString("en-US", {
-        month: "long",
-        day: "numeric",
-        year: "numeric",
-      });
-    const dateOfService = sameMonth
-      ? `${svcMonthName} ${svcStart.getDate()} - ${svcEnd.getDate()}, ${svcYear}`
-      : `${fullFmt(svcStart)} - ${fullFmt(svcEnd)}`;
+    const dateOfService = opts.dateOfService;
 
     const byProject: Record<string, ReportRow[]> = {};
     for (const row of result!.rows!) {
@@ -691,9 +701,49 @@ export default function Page() {
     };
   }
 
-  async function handleGenerateInvoice() {
+  // Opens the popup, pre-filling the date fields with sensible defaults:
+  // Invoice Date = today, Due Date = today + 60, DATE OF SERVICE = the
+  // selected report range rendered as readable text.
+  function openInvoiceModal() {
     if (!result?.rows?.length) return;
-    const { csv, filename } = buildInvoiceCSV();
+    const isoOf = (d: Date) =>
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const now = new Date();
+    const due = new Date(now);
+    due.setDate(due.getDate() + 60);
+
+    const svcStart = parseLocalDate(fromDate);
+    const svcEnd = parseLocalDate(toDate);
+
+    setInvoiceDateInput(isoOf(now));
+    setDueDateInput(isoOf(due));
+    setSvcMonth(svcStart.toLocaleString("en-US", { month: "long" }));
+    setSvcDayFrom(String(svcStart.getDate()));
+    setSvcDayTo(String(svcEnd.getDate()));
+    setSvcYear(String(svcStart.getFullYear()));
+    setShowInvoiceModal(true);
+  }
+
+  // Builds the CSV from the popup values, then hands off to the same
+  // Save-file picker / anchor-download flow used previously.
+  async function confirmInvoiceDownload() {
+    if (!result?.rows?.length) return;
+    if (
+      !invoiceDateInput ||
+      !dueDateInput ||
+      !svcMonth ||
+      !svcDayFrom ||
+      !svcDayTo ||
+      !svcYear
+    )
+      return;
+    const dateOfService = `${svcMonth} ${svcDayFrom} - ${svcDayTo}, ${svcYear}`;
+    const { csv, filename } = buildInvoiceCSV({
+      invoiceDate: invoiceDateInput,
+      dueDate: dueDateInput,
+      dateOfService,
+    });
+    setShowInvoiceModal(false);
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     try {
       if ("showSaveFilePicker" in window) {
@@ -953,6 +1003,274 @@ export default function Page() {
         fontFamily: "ui-sans-serif, system-ui, sans-serif",
       }}
     >
+      {showInvoiceModal && (
+        <div
+          onClick={() => setShowInvoiceModal(false)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(17,24,39,0.45)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 50,
+            padding: 16,
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: "#fff",
+              borderRadius: 14,
+              padding: "28px 28px 24px",
+              width: "100%",
+              maxWidth: 420,
+              boxShadow: "0 20px 50px rgba(0,0,0,0.25)",
+            }}
+          >
+            <h2
+              style={{
+                margin: 0,
+                fontSize: 18,
+                fontWeight: 700,
+                color: "#111827",
+              }}
+            >
+              Invoice details
+            </h2>
+            <p
+              style={{
+                margin: "6px 0 20px",
+                fontSize: 13,
+                color: "#6b7280",
+                lineHeight: 1.5,
+              }}
+            >
+              These dates fill the Invoice Date / Due Date columns and the DATE
+              OF SERVICE line in the memo.
+            </p>
+
+            <label
+              style={{
+                display: "block",
+                fontSize: 12,
+                fontWeight: 600,
+                color: "#374151",
+                marginBottom: 6,
+              }}
+            >
+              Invoice Date
+            </label>
+            <input
+              type="date"
+              value={invoiceDateInput}
+              onChange={(e) => setInvoiceDateInput(e.target.value)}
+              style={{
+                width: "100%",
+                boxSizing: "border-box",
+                padding: "9px 12px",
+                fontSize: 14,
+                border: "1.5px solid #e5e7eb",
+                borderRadius: 8,
+                marginBottom: 16,
+              }}
+            />
+
+            <label
+              style={{
+                display: "block",
+                fontSize: 12,
+                fontWeight: 600,
+                color: "#374151",
+                marginBottom: 6,
+              }}
+            >
+              Due Date
+            </label>
+            <input
+              type="date"
+              value={dueDateInput}
+              onChange={(e) => setDueDateInput(e.target.value)}
+              style={{
+                width: "100%",
+                boxSizing: "border-box",
+                padding: "9px 12px",
+                fontSize: 14,
+                border: "1.5px solid #e5e7eb",
+                borderRadius: 8,
+                marginBottom: 16,
+              }}
+            />
+
+            <label
+              style={{
+                display: "block",
+                fontSize: 12,
+                fontWeight: 600,
+                color: "#374151",
+                marginBottom: 6,
+              }}
+            >
+              Date of Service
+            </label>
+            <div
+              style={{
+                display: "flex",
+                gap: 8,
+                marginBottom: 24,
+              }}
+            >
+              <select
+                value={svcMonth}
+                onChange={(e) => setSvcMonth(e.target.value)}
+                style={{
+                  flex: 2,
+                  boxSizing: "border-box",
+                  padding: "9px 12px",
+                  fontSize: 14,
+                  border: "1.5px solid #e5e7eb",
+                  borderRadius: 8,
+                  background: "#fff",
+                }}
+              >
+                {[
+                  "January",
+                  "February",
+                  "March",
+                  "April",
+                  "May",
+                  "June",
+                  "July",
+                  "August",
+                  "September",
+                  "October",
+                  "November",
+                  "December",
+                ].map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+              <input
+                type="number"
+                min={1}
+                max={31}
+                value={svcDayFrom}
+                onChange={(e) => setSvcDayFrom(e.target.value)}
+                aria-label="Service start day"
+                style={{
+                  flex: 1,
+                  width: "100%",
+                  boxSizing: "border-box",
+                  padding: "9px 8px",
+                  fontSize: 14,
+                  border: "1.5px solid #e5e7eb",
+                  borderRadius: 8,
+                }}
+              />
+              <span
+                style={{
+                  alignSelf: "center",
+                  color: "#6b7280",
+                  fontSize: 14,
+                }}
+              >
+                –
+              </span>
+              <input
+                type="number"
+                min={1}
+                max={31}
+                value={svcDayTo}
+                onChange={(e) => setSvcDayTo(e.target.value)}
+                aria-label="Service end day"
+                style={{
+                  flex: 1,
+                  width: "100%",
+                  boxSizing: "border-box",
+                  padding: "9px 8px",
+                  fontSize: 14,
+                  border: "1.5px solid #e5e7eb",
+                  borderRadius: 8,
+                }}
+              />
+              <input
+                type="number"
+                value={svcYear}
+                onChange={(e) => setSvcYear(e.target.value)}
+                aria-label="Service year"
+                style={{
+                  flex: 1.5,
+                  width: "100%",
+                  boxSizing: "border-box",
+                  padding: "9px 8px",
+                  fontSize: 14,
+                  border: "1.5px solid #e5e7eb",
+                  borderRadius: 8,
+                }}
+              />
+            </div>
+
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "flex-end",
+                gap: 10,
+              }}
+            >
+              <button
+                onClick={() => setShowInvoiceModal(false)}
+                style={{
+                  background: "#fff",
+                  color: "#374151",
+                  border: "1.5px solid #e5e7eb",
+                  borderRadius: 8,
+                  padding: "9px 18px",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmInvoiceDownload}
+                disabled={
+                  !invoiceDateInput ||
+                  !dueDateInput ||
+                  !svcMonth ||
+                  !svcDayFrom ||
+                  !svcDayTo ||
+                  !svcYear
+                }
+                style={{
+                  background: "#059669",
+                  color: "#fff",
+                  border: "none",
+                  borderRadius: 8,
+                  padding: "9px 18px",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  opacity:
+                    !invoiceDateInput ||
+                    !dueDateInput ||
+                    !svcMonth ||
+                    !svcDayFrom ||
+                    !svcDayTo ||
+                    !svcYear
+                      ? 0.5
+                      : 1,
+                }}
+              >
+                Download
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div style={{ maxWidth: 820, margin: "0 auto", padding: "40px 24px" }}>
         {/* Exit Bliss Logo Header */}
         <div
@@ -1212,7 +1530,7 @@ export default function Page() {
           </button>
 
           <button
-            onClick={handleGenerateInvoice}
+            onClick={openInvoiceModal}
             disabled={status !== "done"}
             style={{
               background: status === "done" ? "#059669" : "#f3f4f6",
