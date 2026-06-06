@@ -60,19 +60,34 @@ interface ProjectApiResponse {
 
 type Status = "idle" | "loading" | "done" | "error";
 
-function getReportPeriod() {
+function isoDate(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function parseLocalDate(s: string): Date {
+  const [y, m, d] = s.split("-").map(Number);
+  return new Date(y, (m || 1) - 1, d || 1);
+}
+
+function getDefaultRange(): { from: string; to: string } {
   const now = new Date();
   const first = new Date(now.getFullYear(), now.getMonth(), 1);
   const last = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  return { from: isoDate(first), to: isoDate(last) };
+}
+
+function getReportPeriod(fromISO: string, toISO: string) {
+  const from = parseLocalDate(fromISO);
+  const to = parseLocalDate(toISO);
   const fmt = (d: Date) =>
     d.toLocaleDateString("en-US", {
       month: "long",
       day: "numeric",
       year: "numeric",
     });
-  const month = now.toLocaleString("default", { month: "long" });
-  const year = now.getFullYear();
-  return { period: `${fmt(first)} to ${fmt(last)}`, month, year };
+  const month = from.toLocaleString("default", { month: "long" });
+  const year = from.getFullYear();
+  return { period: `${fmt(from)} to ${fmt(to)}`, month, year };
 }
 
 function LoginPage({ onLogin }: { onLogin: () => void }) {
@@ -398,7 +413,9 @@ export default function Page() {
   const [status, setStatus] = useState<Status>("idle");
   const [log, setLog] = useState<string[]>([]);
   const [result, setResult] = useState<ApiResponse | null>(null);
-  const { period, month, year } = getReportPeriod();
+  const [fromDate, setFromDate] = useState(() => getDefaultRange().from);
+  const [toDate, setToDate] = useState(() => getDefaultRange().to);
+  const { period, month, year } = getReportPeriod(fromDate, toDate);
 
   const [userStatus, setUserStatus] = useState<Status>("idle");
   const [userLog, setUserLog] = useState<string[]>([]);
@@ -425,14 +442,34 @@ export default function Page() {
     setLog((prev) => [...prev, msg]);
   }
 
+  // Changing the range invalidates a previously generated report so the
+  // invoice / XLSX can never be downloaded for a stale date range.
+  function handleRangeChange(which: "from" | "to", value: string) {
+    if (which === "from") setFromDate(value);
+    else setToDate(value);
+    if (status !== "idle") {
+      setStatus("idle");
+      setResult(null);
+      setLog([]);
+    }
+  }
+
   async function handleGenerate() {
+    if (fromDate > toDate) {
+      setStatus("error");
+      setLog(["Error: start date must be on or before the end date."]);
+      return;
+    }
     setStatus("loading");
     setLog([]);
     setResult(null);
     addLog("Connecting to Jira...");
+    addLog(`Reporting period: ${period}`);
     addLog("Fetching CDEF Epics...");
     try {
-      const res = await fetch("/api/jira");
+      const res = await fetch(
+        `/api/jira?from=${encodeURIComponent(fromDate)}&to=${encodeURIComponent(toDate)}`,
+      );
       addLog("Processing stories and fetching worklogs...");
       const data: ApiResponse = await res.json();
       if (!res.ok || data.error) {
@@ -556,10 +593,24 @@ export default function Page() {
     const due = new Date(now);
     due.setDate(due.getDate() + 60);
     const dueStr = `${due.getMonth() + 1}/${due.getDate()}/${due.getFullYear()}`;
-    const svcMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-    const svcLast = new Date(now.getFullYear(), now.getMonth(), 0).getDate();
-    const svcMonthName = svcMonth.toLocaleString("en-US", { month: "long" });
-    const dateOfService = `${svcMonthName} 1 - ${svcLast}, ${svcMonth.getFullYear()}`;
+
+    // Date of service is driven by the selected report range.
+    const svcStart = parseLocalDate(fromDate);
+    const svcEnd = parseLocalDate(toDate);
+    const svcMonthName = svcStart.toLocaleString("en-US", { month: "long" });
+    const svcYear = svcStart.getFullYear();
+    const sameMonth =
+      svcStart.getFullYear() === svcEnd.getFullYear() &&
+      svcStart.getMonth() === svcEnd.getMonth();
+    const fullFmt = (d: Date) =>
+      d.toLocaleDateString("en-US", {
+        month: "long",
+        day: "numeric",
+        year: "numeric",
+      });
+    const dateOfService = sameMonth
+      ? `${svcMonthName} ${svcStart.getDate()} - ${svcEnd.getDate()}, ${svcYear}`
+      : `${fullFmt(svcStart)} - ${fullFmt(svcEnd)}`;
 
     const byProject: Record<string, ReportRow[]> = {};
     for (const row of result!.rows!) {
@@ -636,7 +687,7 @@ export default function Page() {
 
     return {
       csv: lines.join("\n"),
-      filename: `${svcMonthName}_${svcMonth.getFullYear()}_${now.getMonth() + 1}-${now.getDate()}-${now.getFullYear()}.csv`,
+      filename: `${svcMonthName}_${svcYear}_${now.getMonth() + 1}-${now.getDate()}-${now.getFullYear()}.csv`,
     };
   }
 
@@ -1040,7 +1091,78 @@ export default function Page() {
           >
             Active CDEF Monthly Report
           </h1>
-          <p style={{ fontSize: 13, color: "#78716c" }}>{period}</p>
+          <p style={{ fontSize: 13, color: "#78716c", marginBottom: 14 }}>
+            {period}
+          </p>
+
+          {/* Date range selector */}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "flex-end",
+              gap: 16,
+              flexWrap: "wrap",
+            }}
+          >
+            <label
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 4,
+                fontSize: 11,
+                fontWeight: 600,
+                letterSpacing: "0.04em",
+                textTransform: "uppercase",
+                color: "#78716c",
+              }}
+            >
+              From
+              <input
+                type="date"
+                value={fromDate}
+                max={toDate}
+                onChange={(e) => handleRangeChange("from", e.target.value)}
+                style={{
+                  fontSize: 13,
+                  padding: "8px 10px",
+                  borderRadius: 8,
+                  border: "1.5px solid #e7e5e4",
+                  color: "#1c1917",
+                  background: "#fff",
+                  fontFamily: "inherit",
+                }}
+              />
+            </label>
+            <label
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 4,
+                fontSize: 11,
+                fontWeight: 600,
+                letterSpacing: "0.04em",
+                textTransform: "uppercase",
+                color: "#78716c",
+              }}
+            >
+              To
+              <input
+                type="date"
+                value={toDate}
+                min={fromDate}
+                onChange={(e) => handleRangeChange("to", e.target.value)}
+                style={{
+                  fontSize: 13,
+                  padding: "8px 10px",
+                  borderRadius: 8,
+                  border: "1.5px solid #e7e5e4",
+                  color: "#1c1917",
+                  background: "#fff",
+                  fontFamily: "inherit",
+                }}
+              />
+            </label>
+          </div>
         </div>
 
         {/* Divider */}
